@@ -1,5 +1,5 @@
 from fastapi import FastAPI
-from app.routes import chat, health
+from api.routes import chat, health
 
 def create_app() -> FastAPI:
     app = FastAPI(

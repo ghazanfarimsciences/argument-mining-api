@@ -1,8 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from app.schemas.chat import ChatRequest, ChatError
-from app.services import preprocessor, model_client
-from app.utils.session import ensure_session
+from schemas.chat import ChatRequest, ChatError
+from services import preprocessor, model_client
+from utils.session import ensure_session
 import json
 router = APIRouter()
 
