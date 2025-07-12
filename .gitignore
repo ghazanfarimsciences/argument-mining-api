@@ -2,3 +2,6 @@
 __pycache__/
 *.py[cod]
 *$py.class
+synapse-sparks-main/
+training-zoo/
+.env
