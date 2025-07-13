@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import List, Dict
+from typing import List, Dict, Optional
 from uuid import UUID as uuid
 
 
@@ -8,18 +8,18 @@ class ArgumentUnit:
     """Represents an identified argument unit (ADU)"""
     uuid: uuid
     text: str
-    start_pos: int
-    end_pos: int
-    type: str  # 'claim' or 'premise'
-    confidence: float
+    type: str  # 'claim' or 'premise'  #NOTE: Maybe Strict casting ? 
+    start_pos: Optional[int] = None #Not needed for Tinyllama
+    end_pos: Optional[int] = None #Not needed for Tinyllama
+    confidence: Optional[float] = None #Not needed for Tinyllama
 
 @dataclass
 class StanceRelation:
     """Links one premise to one claim with a stance label and confidence"""
     claim_id: uuid
     premise_id: uuid
-    stance: str  # 'pro' or 'con'
-    confidence: float
+    stance: str  # 'pro' / 'con' or 'unidentified' 
+    confidence: Optional[float] = None #Not needed for Tinyllama
 
 # This class is used to represent unlinked argument units (ADUs) before they are linked by stance relations.
 # This will be done via the LLM (ChatGPT) in the next step. 
