@@ -18,20 +18,40 @@ class TinyLLamaLLMClassifier (AduAndStanceClassifier):
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_id, use_auth_token=HF_TOKEN)
         self.model = AutoModelForCausalLM.from_pretrained(self.model_id, use_auth_token=HF_TOKEN)
     
-    def run_prompt(self, prompt, mode, max_new_tokens=10):
-        try:
-            inputs = self.tokenizer(prompt, return_tensors="pt")
-            with torch.no_grad():
-                outputs = self.model.generate(
-                    **inputs,
-                    max_new_tokens=max_new_tokens,
-                    pad_token_id=self.tokenizer.eos_token_id
-                )
-            result = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
-            return result[len(prompt):].strip()
-        except Exception as e:
-            log().warning(f"⚠️ LLM failed: {e}")
-            raise Exception("Model Failed to run the prompt")
+    def run_prompt(self, prompt, max_new_tokens=10, max_retries=3, retry_delay=1):
+        """
+        Runs the prompt on the model with a retry mechanism.
+        Args:
+            prompt (str): The prompt to send to the model.
+            mode (str): The mode for the prompt (not used internally).
+            max_new_tokens (int): Number of new tokens to generate.
+            max_retries (int): Maximum number of retry attempts.
+            retry_delay (int or float): Delay (in seconds) between retries.
+        Returns:
+            str: The model's response.
+        Raises:
+            Exception: If all attempts fail.
+        """
+        import time
+        last_exception = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                inputs = self.tokenizer(prompt, return_tensors="pt")
+                with torch.no_grad():
+                    outputs = self.model.generate(
+                        **inputs,
+                        max_new_tokens=max_new_tokens,
+                        pad_token_id=self.tokenizer.eos_token_id
+                    )
+                result = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+                return result[len(prompt):].strip()
+            except Exception as e:
+                log().warning(f"⚠️ LLM failed on attempt {attempt}/{max_retries}: {e}")
+                last_exception = e
+                if attempt < max_retries:
+                    time.sleep(retry_delay)
+        # If we reach here, all attempts failed
+        raise Exception(f"Model failed to run the prompt after {max_retries} attempts") from last_exception
         
         
     def classify_adus(self, text: str) -> List[ArgumentUnit]:
@@ -49,7 +69,7 @@ class TinyLLamaLLMClassifier (AduAndStanceClassifier):
         for sentence in sentences : 
             prompt = f"Classify the following sentence as either a 'claim' or a 'premise':\n\"{sentence}\"\nAnswer:"
 
-            response = self.run_prompt(prompt,"classifier")
+            response = self.run_prompt(prompt)
             adu_type = "claim" if "claim" in response.lower() else "premise"
             log().debug(f"sentence: {sentence} | predicted as {adu_type}")
             adu : ArgumentUnit = ArgumentUnit(uuid=uuid4(),text=sentence,type=adu_type)
@@ -93,7 +113,7 @@ class TinyLLamaLLMClassifier (AduAndStanceClassifier):
     Evidence: {premise.text}
     Stance:"""
     
-                result = self.run_prompt(prompt, "relationship_classifier")
+                result = self.run_prompt(prompt)
     
                 # Normalize result to 'pro' or 'con'
                 result_lower = result.lower().strip()
