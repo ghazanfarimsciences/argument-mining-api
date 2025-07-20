@@ -275,6 +275,55 @@ class EncoderModelLoader:
         except Exception as e:
             logger.error(f"Error processing JSON input: {str(e)}")
             return json.dumps({'error': str(e), 'status': 'failed'}, indent=2)
+            
+class DebertaModelLoader:
+    def __init__(self, type_model_path: str, stance_model_path: str):
+        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        self.tokenizer = AutoTokenizer.from_pretrained(type_model_path)
+        self.type_model = AutoModelForSequenceClassification.from_pretrained(type_model_path).to(self.device)
+        self.stance_model = AutoModelForSequenceClassification.from_pretrained(stance_model_path).to(self.device)
+        self.type_model.eval()
+        self.stance_model.eval()
+
+    def extract_sentences(self, text: str) -> List[str]:
+        sentences = re.split(r'[.!?]+', text)
+        return [s.strip() for s in sentences if s.strip()]
+
+    def classify_adu_type(self, sentence: str) -> tuple[str, float]:
+        inputs = self.tokenizer(sentence, return_tensors="pt", truncation=True, padding=True).to(self.device)
+        with torch.no_grad():
+            output = self.type_model(**inputs)
+            probs = torch.softmax(output.logits, dim=-1)
+            pred = torch.argmax(probs).item()
+            conf = torch.max(probs).item()
+        label = 'claim' if pred == 1 else 'premise'
+        return label, conf
+
+    def classify_stance(self, claim_text: str, premise_text: str) -> tuple[str, float]:
+        combined = f"{claim_text} [SEP] {premise_text}"
+        inputs = self.tokenizer(combined, return_tensors="pt", truncation=True, padding=True).to(self.device)
+        with torch.no_grad():
+            output = self.stance_model(**inputs)
+            probs = torch.softmax(output.logits, dim=-1)
+            pred = torch.argmax(probs).item()
+            conf = torch.max(probs).item()
+        label = 'pro' if pred == 1 else 'con'
+        return label, conf
+
+    def process_text(self, text: str) -> UnlinkedArgumentUnits:
+        sentences = self.extract_sentences(text)
+        claims, premises = [], []
+        current_pos = 0
+
+        for sentence in sentences:
+            start = text.find(sentence, current_pos)
+            end = start + len(sentence)
+            current_pos = end
+            adu_type, conf = self.classify_adu_type(sentence)
+            adu = ArgumentUnit(uuid=uuid4(), text=sentence, start_pos=start, end_pos=end, type=adu_type, confidence=conf)
+            (claims if adu_type == 'claim' else premises).append(adu)
+
+        return UnlinkedArgumentUnits(claims=claims, premises=premises)
 
 MODEL_AND_ADAPTERS = {
     "ModernBERT": {
@@ -284,8 +333,17 @@ MODEL_AND_ADAPTERS = {
             'adu_classification':   "argument-mining-modernBert/argument-mining-modernbert-adu_classification/checkpoint-9822",
             'stance_classification':"argument-mining-modernBert/argument-mining-modernbert-stance_classification/checkpoint-4911",
         }
-    }
+    },
+{
+"DeBERTa": {
+    "base_model_path": "microsoft/deberta-v3-base",
+    "type_model_path": "models/deberta-adu-type/checkpoint-3000",
+    "stance_model_path": "models/deberta-stance/checkpoint-2800"
 }
+
+}
+}
+
 def test_modern_bert():
     miner = EncoderModelLoader(
         base_model_path=MODEL_AND_ADAPTERS["ModernBERT"]["base_model_path"],
@@ -303,6 +361,33 @@ def test_modern_bert():
     print(json.dumps(example_input, indent=2))
     print("\nOutput:")
     print(result)
+
+def test_deberta():
+    model_config = MODEL_AND_ADAPTERS["DeBERTa"]
+
+    miner = DebertaModelLoader(
+        type_model_path=model_config["type_model_path"],
+        stance_model_path=model_config["stance_model_path"]
+    )
+
+    example_input = {
+        "text": "Climate Change is made up. Urban gardening is not just a trend; it is a necessary adaptation to modern urban life. Cities are increasingly crowded, and access to fresh produce is often limited in low-income neighborhoods. By turning rooftops, balconies, and vacant lots into green spaces, residents can take control of their food sources. This not only improves nutrition but also promotes community building and environmental awareness. Moreover, urban gardens help reduce the urban heat island effect, making cities more livable during extreme weather. While some argue that the scale of urban gardening is too small to make a real impact, its cumulative effects—both social and ecological—can be profound."
+    }
+
+    json_input = json.dumps(example_input)
+    input_text = json.loads(json_input)["text"]
+    result = miner.process_text(input_text)
+
+    print("Input:")
+    print(json.dumps(example_input, indent=2))
+
+    output_dict = {
+        "claims": [claim.text for claim in result.claims],
+        "premises": [premise.text for premise in result.premises]
+    }
+
+    print("\nOutput:")
+    print(json.dumps(output_dict, indent=2))
 
 if __name__ == "__main__":
     test_modern_bert()
