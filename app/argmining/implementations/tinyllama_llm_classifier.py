@@ -6,7 +6,7 @@ from uuid import uuid4
 from ..interfaces.adu_and_stance_classifier import AduAndStanceClassifier
 from ..models.argument_units import ArgumentUnit, LinkedArgumentUnits, LinkedArgumentUnitsWithStance, StanceRelation, ClaimPremiseRelationship
 from typing import List
-from ..log import log
+from ...log import log
 from ..config import HF_TOKEN 
 
 def split_into_sentences(text):

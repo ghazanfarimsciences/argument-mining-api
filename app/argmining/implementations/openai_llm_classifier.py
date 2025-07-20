@@ -6,7 +6,7 @@ from ..interfaces.adu_and_stance_classifier import AduAndStanceClassifier
 from ..models.argument_units import ArgumentUnit, LinkedArgumentUnits, LinkedArgumentUnitsWithStance, StanceRelation, ClaimPremiseRelationship
 from typing import List
 from ..config import OPENAI_KEY
-from ..log import log
+from ...log import log
 
 
 #TODO: Implement Pydantic

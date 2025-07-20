@@ -8,7 +8,7 @@ from ..interfaces.claim_premise_linker import ClaimPremiseLinker
 from ..models.argument_units import ArgumentUnit, ClaimPremiseRelationship, LinkedArgumentUnits, UnlinkedArgumentUnits
 from ..config import OPENAI_KEY
 
-client = openai.OpenAI(api_key=OPENAI_KEY)
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -67,7 +67,7 @@ class OpenAIClaimPremiseLinker(ClaimPremiseLinker):
         )
 
         for attempt in range(1, max_retries + 1):
-            response = client.chat.completions.create(
+            response = self.client.chat.completions.create(
                 model="gpt-4.1",
                 messages=[
                     {"role": "system", "content": system_prompt.strip()},
