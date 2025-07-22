@@ -67,7 +67,24 @@ class TinyLLamaLLMClassifier (AduAndStanceClassifier):
         # Step 2: Iterate through sentences and classify them
         argument_mining_list = []
         for sentence in sentences : 
-            prompt = f"Classify the following sentence as either a 'claim' or a 'premise':\n\"{sentence}\"\nAnswer:"
+            prompt = f"""
+            You are an argument-mining classifier.
+
+Task: Decide whether the SINGLE input sentence is a **claim** or a **premise**.
+
+Definitions (use these only):
+- claim: a statement that takes a stance or asserts something to be true/false or should/shouldn't happen.
+- premise: a statement that gives evidence, reasons, data, or explanation intended to support/refute a claim.
+
+Rules:
+- Output EXACTLY ONE lowercase word: "claim" or "premise".
+- If the sentence mixes both, pick the main function (assertion → claim; support/explanation → premise).
+- Do NOT add punctuation or extra text.
+
+Sentence: "{sentence}"
+
+Answer:
+            """
 
             response = self.run_prompt(prompt)
             adu_type = "claim" if "claim" in response.lower() else "premise"

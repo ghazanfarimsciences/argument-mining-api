@@ -329,19 +329,16 @@ MODEL_AND_ADAPTERS = {
     "ModernBERT": {
         "base_model_path": "answerdotai/ModernBERT-base",
         "adapter_paths": {
-            'adu_identification':   "argument-mining-modernBert/argument-mining-modernbert-adu_identification/checkpoint-9822",
-            'adu_classification':   "argument-mining-modernBert/argument-mining-modernbert-adu_classification/checkpoint-9822",
-            'stance_classification':"argument-mining-modernBert/argument-mining-modernbert-stance_classification/checkpoint-4911",
+            "adu_identification":   "argument-mining-modernBert/argument-mining-modernbert-adu_identification/checkpoint-9822",
+            "adu_classification":   "argument-mining-modernBert/argument-mining-modernbert-adu_classification/checkpoint-9822",
+            "stance_classification":"argument-mining-modernBert/argument-mining-modernbert-stance_classification/checkpoint-4911",
         }
     },
-{
-"DeBERTa": {
-    "base_model_path": "microsoft/deberta-v3-base",
-    "type_model_path": "models/deberta-adu-type/checkpoint-3000",
-    "stance_model_path": "models/deberta-stance/checkpoint-2800"
-}
-
-}
+    "DeBERTa": {
+        "base_model_path": "microsoft/deberta-v3-base",
+        "type_model_path": "models/deberta-adu-type/checkpoint-3000",
+        "stance_model_path": "models/deberta-stance/checkpoint-2800"
+    }
 }
 
 def test_modern_bert():

@@ -19,9 +19,20 @@ def split_into_sentences(text):
 class OpenAILLMClassifier (AduAndStanceClassifier): 
     def __init__ (self): 
         self.client = openai.OpenAI(api_key=OPENAI_KEY)
-        self.system_prompt_adu_classification = """You are an assistant for argument mining.
-                        Classify the following sentence as either a 'claim' or a 'premise'.
-                        Only return one word: claim or premise.
+        self.system_prompt_adu_classification = """            You are an argument-mining classifier.
+
+Task: Decide whether the SINGLE input sentence is a **claim** or a **premise**.
+
+Definitions (use these only):
+- claim: a statement that takes a stance or asserts something to be true/false or should/shouldn't happen.
+- premise: a statement that gives evidence, reasons, data, or explanation intended to support/refute a claim.
+
+Rules:
+- Output EXACTLY ONE lowercase word: "claim" or "premise".
+- If the sentence mixes both, pick the main function (assertion → claim; support/explanation → premise).
+- Do NOT add punctuation or extra text.
+
+Answer:
                         """
         self.system_prompt_stance_classification = """You are an assistant for argument mining.
                         You are given a claim and evidence (premise).
@@ -29,7 +40,7 @@ class OpenAILLMClassifier (AduAndStanceClassifier):
                         Respond only with one word: "pro" or "con".
                         """
         
-    def classify_sentence (self, sentence: str, model: str = "gpt-4-turbo") -> str: 
+    def classify_sentence (self, sentence: str, model: str = "gpt-4.1") -> str: 
         """
         Executes the prompt to classify a single sentence as a 'claim' or 'premise'.
         Includes a retry mechanism with fallback to gpt-3.5-turbo.
