@@ -13,7 +13,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class ClaimPremiseRelationshipPydanticModel(BaseModel):
-    claim_id: UUID
+    claim_id: UUID | None
     premise_ids : List[UUID] | None
 
 class LinkingOutputPydanticModel(BaseModel):
@@ -104,7 +104,7 @@ class OpenAIClaimPremiseLinker(ClaimPremiseLinker):
                 # success: wrap into your return type
                 claims_premises_relationships = [
                     ClaimPremiseRelationship(
-                        claim_id=rel.claim_id,
+                        claim_id=rel.claim_id if rel.claim_id else None,
                         premise_ids=[pid for pid in (rel.premise_ids or []) if pid is not None]
                     )
                     for rel in validated.claims_premises_relationships
@@ -121,7 +121,7 @@ class OpenAIClaimPremiseLinker(ClaimPremiseLinker):
     
 
     
-def test():
+def test_linker():
     claims = [
        ArgumentUnit(type='claim', uuid=uuid4(), text="Remote work improves employee productivity.", start_pos=0, end_pos=0, confidence=1.0),
        ArgumentUnit(type='claim', uuid=uuid4(), text="AI-generated art is not true creativity.", start_pos=0, end_pos=0, confidence=1.0),
@@ -157,6 +157,3 @@ def test():
             print(f"  Linked Premises: {', '.join(linked_premises)}")
         else:
             print(f"Claim with ID {relation.claim_id} not found.")
-
-if __name__ == "__main__":
-    test()

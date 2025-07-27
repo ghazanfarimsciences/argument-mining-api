@@ -1,9 +1,13 @@
+from dataclasses import asdict
+import json
 import openai
 import re 
 
 from uuid import UUID, uuid4
+
+from app.argmining.implementations.openai_claim_premise_linker import OpenAIClaimPremiseLinker
 from ..interfaces.adu_and_stance_classifier import AduAndStanceClassifier
-from ..models.argument_units import ArgumentUnit, LinkedArgumentUnits, LinkedArgumentUnitsWithStance, StanceRelation, ClaimPremiseRelationship
+from ..models.argument_units import ArgumentUnit, LinkedArgumentUnits, LinkedArgumentUnitsWithStance, StanceRelation, ClaimPremiseRelationship, UnlinkedArgumentUnits
 from typing import List
 from ..config import OPENAI_KEY
 from ...log import log
@@ -40,7 +44,7 @@ Answer:
                         Respond only with one word: "pro" or "con".
                         """
         
-    def classify_sentence (self, sentence: str, model: str = "gpt-4.1") -> str: 
+    def classify_sentence(self, sentence: str, model: str = "gpt-4.1") -> str:
         """
         Executes the prompt to classify a single sentence as a 'claim' or 'premise'.
         Includes a retry mechanism with fallback to gpt-3.5-turbo.
@@ -50,24 +54,30 @@ Answer:
             response = self.client.chat.completions.create(
                 model=model,
                 messages=[
-                    {"role": "system", "content": self.system_prompt_adu_classification.strip()},
-                    {"role": "user", "content": user_prompt.strip()}
+                    {
+                        "role": "system",
+                        "content": self.system_prompt_adu_classification.strip(),
+                    },
+                    {"role": "user", "content": user_prompt.strip()},
                 ],
-                temperature=0.2
+                temperature=0.2,
             )
-            return response.choices[0].message.content.strip().lower()
+            return response.choices[0].message.content.strip().lower() # type: ignore
         except Exception as e:
             log().warning(f"❌ Model {model} failed for ADU classification: {e}")
             if model != "gpt-3.5-turbo":
-                log().info("Attempting with gpt-3.5-turbo for ADU classification.")
+                log().info(
+                    "Attempting with gpt-3.5-turbo for ADU classification."
+                )
                 return self.classify_sentence(sentence, model="gpt-3.5-turbo")
-            log().error("Failed ADU classification after retries. Defaulting to 'premise'.")
-            return "premise" # Fallback if all models fail
+            log().error(
+                "Failed ADU classification after retries. Defaulting to 'premise'."
+            )
+            return "premise"  # Fallback if all models fail
         
-    def classify_stance_single(self, claim_text: str, premise_text: str, model: str = "gpt-4-turbo") -> str:
+    def classify_stance_single(self, claim_text: str, premise_text: str, model: str = "gpt-4.1") -> str:
         """
         Classifies the stance between a single claim and premise.
-        Includes a retry mechanism with fallback to gpt-3.5-turbo.
         """
         user_prompt = f"""Claim: {claim_text}
 Evidence: {premise_text}
@@ -82,7 +92,7 @@ Stance:"""
                 temperature=0.2,
                 max_tokens=5 # Keep it short for 'pro' or 'con'
             )
-            result = response.choices[0].message.content.strip().lower()
+            result = response.choices[0].message.content.strip().lower() # type: ignore
             if any(x in result for x in ("refute", "con")):
                 return "con"
             elif any(x in result for x in ("support", "pro")):
@@ -92,47 +102,60 @@ Stance:"""
                 return "unidentified"
         except Exception as e:
             log().warning(f"❌ Model {model} failed for stance classification: {e}")
-            if model != "gpt-3.5-turbo":
-                log().info("Attempting with gpt-3.5-turbo for stance classification.")
-                return self.classify_stance_single(claim_text, premise_text, model="gpt-3.5-turbo")
-            log().error("Failed stance classification after retries. Defaulting to 'unidentified'.")
             return "unidentified" # Fallback if all models fail
 
             
-    def classify_adus(self, text: str) -> List[ArgumentUnit]:
+    def classify_adus(self, text: str) -> UnlinkedArgumentUnits:
         """
         Extracts and labels argumentative units from text.
         Args:
-            text (str): The raw input document.  
+            text (str): The raw input document.
         Returns:
-            List[ArgumentUnit]: Each unit is a Claim or Premise with
-                                 start/end character positions and confidence.
+            UnlinkedArgumentUnits: An object containing lists of claims and premises.
         """
-        # Step 1: Split paragraph into sentences 
+        # Step 1: Split paragraph into sentences
         sentences = split_into_sentences(text)
         log().info(f"Found {len(sentences)} sentences in the input text")
 
-        # Step 2: Predict ADU Type for every sentence 
-        argument_mining_list = []
-        model_to_use = "gpt-4-turbo" # Can be configured
-        current_pos = 0 
-        for sentence in sentences: 
+        # Step 2: Classify each sentence as a claim or premise
+        claims: List[ArgumentUnit] = []
+        premises: List[ArgumentUnit] = []
+
+        model_to_use = "gpt-4.1"  # Can be configured
+        current_pos = 0
+        for sentence in sentences:
+            if not sentence:  # Skip empty strings that might result from splitting
+                continue
+
             adu_type = self.classify_sentence(sentence, model_to_use)
-            
-            # Find start and end positions. This is a simplification and might need
-            # more robust handling for complex texts (e.g., if sentence appears multiple times)
+
             start_pos = text.find(sentence, current_pos)
-            end_pos = start_pos + len(sentence) if start_pos != -1 else current_pos
-            
-            log().debug(f"Sentence: '{sentence}' | Predicted as: {adu_type} | Start: {start_pos} | End: {end_pos}")
-            
-            adu = ArgumentUnit(uuid=uuid4(), text=sentence, type=adu_type, start_pos=start_pos, end_pos=end_pos, confidence=1.0) # OpenAI doesn't directly provide confidence score in this API call
-            argument_mining_list.append(adu)
-            
-            if start_pos != -1: # Update current position for next search
-                current_pos = end_pos + 1 # +1 to skip the space/punctuation
-            
-        return argument_mining_list
+            end_pos = start_pos + len(sentence) if start_pos != -1 else -1
+
+            log().debug(
+                f"Sentence: '{sentence}' | Predicted as: {adu_type} | Start: {start_pos} | End: {end_pos}"
+            )
+
+            adu = ArgumentUnit(
+                uuid=uuid4(),
+                text=sentence,
+                type=adu_type,
+                start_pos=start_pos,
+                end_pos=end_pos,
+                confidence=None  # Confidence is not used in this implementation
+            )
+
+            # Append the new ADU to the correct list
+            if adu.type == "claim":
+                claims.append(adu)
+            else:
+                premises.append(adu)
+
+            if start_pos != -1:
+                current_pos = end_pos
+
+        # Construct and return the UnlinkedArgumentUnits object
+        return UnlinkedArgumentUnits(claims=claims, premises=premises)
     
     def classify_stance(self, linked_argument_units: LinkedArgumentUnits, originalText: str) -> LinkedArgumentUnitsWithStance:
         """
@@ -143,7 +166,7 @@ Stance:"""
         :return: LinkedArgumentUnitsWithStance object representing the final stance graph.
         """
         result_linked_arguments: List[StanceRelation] = []
-        model_to_use = "gpt-4-turbo" # Can be configured
+        model_to_use = "gpt-4.1" # Can be configured
 
         for relation in linked_argument_units.claims_premises_relationships:
             # Find the claim object
@@ -175,7 +198,7 @@ Stance:"""
                         claim_id=claim.uuid,
                         premise_id=premise.uuid,
                         stance=stance_relationship,
-                        confidence=1.0 # OpenAI doesn't directly provide confidence score in this API call
+                        confidence=None # OpenAI doesn't directly provide confidence score in this API call
                     )
                 )
 
@@ -186,61 +209,57 @@ Stance:"""
             stance_relations=result_linked_arguments
         )
 
-def test_model(): 
-    log().info("Running OpenAI LLM Classifier test...")
-    # Create UUIDs
-    claim1_id = uuid4()
-    claim2_id = uuid4()
-    premise1_id = uuid4()
-    premise2_id = uuid4()
-    premise3_id = uuid4()
+def test_model():
+    """
+    Tests the full pipeline for the TinyLlama LLM Classifier.
+    This includes classifying ADUs, linking claims to premises, and classifying stance.
+    """
     
-    # Claims
-    claims = [
-        ArgumentUnit(uuid=claim1_id, text="Climate change is a serious threat.", start_pos=0, end_pos=34, type="claim", confidence=0.98),
-        ArgumentUnit(uuid=claim2_id, text="Education improves social mobility.", start_pos=35, end_pos=70, type="claim", confidence=0.95)
-    ]
+    # Factory: Instantiate the correct class with its specific parameters
+    miner: AduAndStanceClassifier = OpenAILLMClassifier()
     
-    # Premises
-    premises = [
-        ArgumentUnit(uuid=premise1_id, text="Rising temperatures are affecting ecosystems.", start_pos=71, end_pos=120, type="premise", confidence=0.97),
-        ArgumentUnit(uuid=premise2_id, text="CO2 levels have increased drastically.", start_pos=121, end_pos=160, type="premise", confidence=0.96),
-        ArgumentUnit(uuid=premise3_id, text="Access to schooling enables better job opportunities.", start_pos=161, end_pos=210, type="premise", confidence=0.96)
-    ]
+    claim_linker = OpenAIClaimPremiseLinker()
+    example_text = "Climate Change is made up. The measurements of temperature were only recorded the last 100 years, before that there could've been even hotter times. Urban gardening is not just a trend; it is a necessary adaptation to modern urban life. Cities are increasingly crowded, and access to fresh produce is often limited in low-income neighborhoods. By turning rooftops, balconies, and vacant lots into green spaces, residents can take control of their food sources. This not only improves nutrition but also promotes community building and environmental awareness. Moreover, urban gardens help reduce the urban heat island effect, making cities more livable during extreme weather. While some argue that the scale of urban gardening is too small to make a real impact, its cumulative effects—both social and ecological—can be profound."
+
+    # The rest of the pipeline is IDENTICAL for both models because they share the same interface.
     
-    # Relationships
-    relationships = [
-        ClaimPremiseRelationship(claim_id=claim1_id, premise_ids=[premise1_id, premise2_id]),
-        ClaimPremiseRelationship(claim_id=claim2_id, premise_ids=[premise3_id])
-    ]
-    
-    # LinkedArgumentUnits test object
-    linked_argument_units_test = LinkedArgumentUnits(
-        claims=claims,
-        premises=premises,
-        claims_premises_relationships=relationships
+    # --- Step 1: Classify ADUs to get unlinked claims and premises ---
+    (f"--- Running Step 1: Classify ADUs using TinyLLama ---")
+    unlinked_adus = miner.classify_adus(example_text)
+    log().info(f"Found Claims: {len(unlinked_adus.claims)}")
+    log().info(f"Found Premises: {len(unlinked_adus.premises)}")
+    log().info("--------------------")
+
+    # --- Step 2: Link claims to premises using the OpenAI linker ---
+    log().info("--- Running Step 2: Linking Claims to Premises (OpenAI) ---")
+    try:
+        linked_adus = claim_linker.link_claims_to_premises(unlinked_adus)
+        log().info(f"Successfully linked ADUs.")
+        log().info("--------------------")
+    except (openai.AuthenticationError, ValueError) as e:
+        log().error(f"ERROR: Could not run linking step. Please check your OpenAI API key. Details: {e}")
+        return
+    except Exception as e:
+        log().error(f"An unexpected error occurred during linking: {e}")
+        return
+
+    # --- Step 3: Classify the stance for the linked units ---
+    log().info(f"--- Running Step 3: Classify Stance using TinyLLama ---")
+    final_structure = miner.classify_stance(
+        linked_argument_units=linked_adus, originalText=example_text
     )
-    
-    original_text = "Climate change is a serious threat. Education improves social mobility. Rising temperatures are affecting ecosystems. CO2 levels have increased drastically. Access to schooling enables better job opportunities."
-    
-    # Test ADU classification
-    log().info("Testing classify_adus method:")
-    openai_classifier = OpenAILLMClassifier()
-    identified_adus = openai_classifier.classify_adus(original_text)
-    for adu in identified_adus:
-        log().info(f"Identified ADU: Type={adu.type}, Text='{adu.text}'")
+    log().info(f"Generated {len(final_structure.stance_relations)} stance relations.")
+    log().info("--------------------")
 
-    # Test Stance classification
-    log().info("\nTesting classify_stance method:")
-    result_stance = openai_classifier.classify_stance(linked_argument_units_test, original_text)
-    
-    log().debug(result_stance)
+    # --- Final Output ---
+    def _convert_to_json(o):
+        if isinstance(o, UUID): return str(o)
+        if isinstance(o, dict): return {k: _convert_to_json(v) for k, v in o.items()}
+        if isinstance(o, list): return [_convert_to_json(v) for v in o]
+        return o
 
-    for relation in result_stance.stance_relations:
-        claim_text = next(c.text for c in result_stance.claims if c.uuid == relation.claim_id)
-        premise_text = next(p.text for p in result_stance.premises if p.uuid == relation.premise_id)
-        log().info(f"Stance: Claim: '{claim_text}' | Premise: '{premise_text}' | Stance: {relation.stance}")
+    raw_dict = asdict(final_structure)
+    final_json = json.dumps(_convert_to_json(raw_dict), indent=2)
 
-
-if __name__ == "__main__":
-    test_model()
+    log().info("\n--- Final Argument Structure Output ---")
+    log().info(final_json)

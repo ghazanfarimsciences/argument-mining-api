@@ -35,7 +35,7 @@ class UnlinkedArgumentUnits:
 @dataclass
 class ClaimPremiseRelationship:
     """Represents a relationship between a claim and premise"""
-    claim_id: uuid
+    claim_id: uuid | None # The claim_id can be None if there were only premises identified 
     premise_ids: List[uuid]
 
 # This is the result of the linking step, where we linked claims to premises.

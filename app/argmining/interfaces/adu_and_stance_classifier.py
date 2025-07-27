@@ -1,21 +1,20 @@
 from abc import ABC, abstractmethod
 from typing import List
 
-from ..models.argument_units import ArgumentUnit, LinkedArgumentUnits, LinkedArgumentUnitsWithStance
+from ..models.argument_units import LinkedArgumentUnits, LinkedArgumentUnitsWithStance, UnlinkedArgumentUnits
 
 class AduAndStanceClassifier(ABC):
     """Interface for ADU extraction and stance classification."""
 
     @abstractmethod
-    def classify_adus(self, text: str) -> List[ArgumentUnit]:
+    def classify_adus(self, text: str) -> UnlinkedArgumentUnits:
         """Extracts and labels argumentative units from text.
 
         Args:
             text (str):  The raw input document.
 
         Returns:
-            List[ArgumentUnit]:  Each unit is a Claim or Premise with
-                                 start/end character positions and confidence.
+            UnlinkedArgumentUnits  List of claims and premises extracted from the text.
         """
         pass
 

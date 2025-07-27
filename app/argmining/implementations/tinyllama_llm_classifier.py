@@ -1,10 +1,16 @@
+from dataclasses import asdict
+import json
+import uuid
+import openai
 import torch
 import re 
 
 from transformers import AutoTokenizer, AutoModelForCausalLM
-from uuid import uuid4
+from uuid import UUID, uuid4
+
+from app.argmining.implementations.openai_claim_premise_linker import OpenAIClaimPremiseLinker
 from ..interfaces.adu_and_stance_classifier import AduAndStanceClassifier
-from ..models.argument_units import ArgumentUnit, LinkedArgumentUnits, LinkedArgumentUnitsWithStance, StanceRelation, ClaimPremiseRelationship
+from ..models.argument_units import ArgumentUnit, LinkedArgumentUnits, LinkedArgumentUnitsWithStance, StanceRelation, ClaimPremiseRelationship, UnlinkedArgumentUnits
 from typing import List
 from ...log import log
 from ..config import HF_TOKEN 
@@ -54,19 +60,23 @@ class TinyLLamaLLMClassifier (AduAndStanceClassifier):
         raise Exception(f"Model failed to run the prompt after {max_retries} attempts") from last_exception
         
         
-    def classify_adus(self, text: str) -> List[ArgumentUnit]:
-        """Extracts and labels argumentative units from text.    
+    def classify_adus(self, text: str) -> UnlinkedArgumentUnits:
+        """Extracts and labels argumentative units from text.
         Args:
-            text (str):  The raw input document.    
+            text (str):  The raw input document.
         Returns:
-            List[ArgumentUnit]:  Each unit is a Claim or Premise
+            UnlinkedArgumentUnits: List of claims and premises extracted from the text.
         """
-        # Step1: Split paragraph into sentences 
+        # Step 1: Split paragraph into sentences
         sentences = split_into_sentences(text)
         log().info(f"Found {len(sentences)} in the input text")
+
+        # Initialize separate lists for claims and premises
+        claims: List[ArgumentUnit] = []
+        premises: List[ArgumentUnit] = []
+
         # Step 2: Iterate through sentences and classify them
-        argument_mining_list = []
-        for sentence in sentences : 
+        for sentence in sentences:
             prompt = f"""
             You are an argument-mining classifier.
 
@@ -87,12 +97,18 @@ Answer:
             """
 
             response = self.run_prompt(prompt)
-            adu_type = "claim" if "claim" in response.lower() else "premise"
+            adu_type = (
+                "claim" if "claim" in response.lower() else "premise"
+            )
             log().debug(f"sentence: {sentence} | predicted as {adu_type}")
-            adu : ArgumentUnit = ArgumentUnit(uuid=uuid4(),text=sentence,type=adu_type)
-            argument_mining_list.append(adu)
-
-        return argument_mining_list
+            adu: ArgumentUnit = ArgumentUnit(
+                uuid=uuid4(), text=sentence, type=adu_type
+            )
+            if adu_type == "claim":
+                claims.append(adu)
+            else:
+                premises.append(adu)
+        return UnlinkedArgumentUnits(claims=claims, premises=premises)
 
     
     def classify_stance(self, linked_argument_units: LinkedArgumentUnits, originalText: str) -> LinkedArgumentUnitsWithStance:
@@ -158,42 +174,57 @@ Answer:
             stance_relations=result_linked_arguments
         )
     
-def test_model(): 
-    # Create UUIDs
-    claim1_id = uuid4()
-    claim2_id = uuid4()
-    premise1_id = uuid4()
-    premise2_id = uuid4()
-    premise3_id = uuid4()
+def test_model():
+    """
+    Tests the full pipeline for the TinyLlama LLM Classifier.
+    This includes classifying ADUs, linking claims to premises, and classifying stance.
+    """
     
-    # Claims
-    claims = [
-        ArgumentUnit(uuid=claim1_id, text="Climate change is a serious threat.", start_pos=0, end_pos=34, type="claim", confidence=0.98),
-        ArgumentUnit(uuid=claim2_id, text="Education improves social mobility.", start_pos=35, end_pos=70, type="claim", confidence=0.95)
-    ]
+    # Factory: Instantiate the correct class with its specific parameters
+    miner: AduAndStanceClassifier = TinyLLamaLLMClassifier()
     
-    # Premises
-    premises = [
-        ArgumentUnit(uuid=premise1_id, text="Rising temperatures are affecting ecosystems.", start_pos=71, end_pos=120, type="premise", confidence=0.97),
-        ArgumentUnit(uuid=premise2_id, text="CO2 levels have increased drastically.", start_pos=121, end_pos=160, type="premise", confidence=0.96),
-        ArgumentUnit(uuid=premise3_id, text="Access to schooling enables better job opportunities.", start_pos=161, end_pos=210, type="premise", confidence=0.96)
-    ]
+    claim_linker = OpenAIClaimPremiseLinker()
+    example_text = "Climate Change is made up. The measurements of temperature were only recorded the last 100 years, before that there could've been even hotter times. Urban gardening is not just a trend; it is a necessary adaptation to modern urban life. Cities are increasingly crowded, and access to fresh produce is often limited in low-income neighborhoods. By turning rooftops, balconies, and vacant lots into green spaces, residents can take control of their food sources. This not only improves nutrition but also promotes community building and environmental awareness. Moreover, urban gardens help reduce the urban heat island effect, making cities more livable during extreme weather. While some argue that the scale of urban gardening is too small to make a real impact, its cumulative effects—both social and ecological—can be profound."
+
+    # The rest of the pipeline is IDENTICAL for both models because they share the same interface.
     
-    # Relationships
-    relationships = [
-        ClaimPremiseRelationship(claim_id=claim1_id, premise_ids=[premise1_id, premise2_id]),
-        ClaimPremiseRelationship(claim_id=claim2_id, premise_ids=[premise3_id])
-    ]
-    
-    # LinkedArgumentUnits test object
-    linked_argument_units_test = LinkedArgumentUnits(
-        claims=claims,
-        premises=premises,
-        claims_premises_relationships=relationships
+    # --- Step 1: Classify ADUs to get unlinked claims and premises ---
+    (f"--- Running Step 1: Classify ADUs using TinyLLama ---")
+    unlinked_adus = miner.classify_adus(example_text)
+    log().info(f"Found Claims: {len(unlinked_adus.claims)}")
+    log().info(f"Found Premises: {len(unlinked_adus.premises)}")
+    log().info("--------------------")
+
+    # --- Step 2: Link claims to premises using the OpenAI linker ---
+    log().info("--- Running Step 2: Linking Claims to Premises (OpenAI) ---")
+    try:
+        linked_adus = claim_linker.link_claims_to_premises(unlinked_adus)
+        log().info(f"Successfully linked ADUs.")
+        log().info("--------------------")
+    except (openai.AuthenticationError, ValueError) as e:
+        log().error(f"ERROR: Could not run linking step. Please check your OpenAI API key. Details: {e}")
+        return
+    except Exception as e:
+        log().error(f"An unexpected error occurred during linking: {e}")
+        return
+
+    # --- Step 3: Classify the stance for the linked units ---
+    log().info(f"--- Running Step 3: Classify Stance using TinyLLama ---")
+    final_structure = miner.classify_stance(
+        linked_argument_units=linked_adus, originalText=example_text
     )
-    
-    original_text = "Climate change is a serious threat. Education improves social mobility. Rising temperatures are affecting ecosystems. CO2 levels have increased drastically. Access to schooling enables better job opportunities."
-    #Test Model
-    tinyllamamodel  = TinyLLamaLLMClassifier()
-    result = tinyllamamodel.classify_stance(linked_argument_units_test,original_text)
-    log().debug(result)
+    log().info(f"Generated {len(final_structure.stance_relations)} stance relations.")
+    log().info("--------------------")
+
+    # --- Final Output ---
+    def _convert_to_json(o):
+        if isinstance(o, UUID): return str(o)
+        if isinstance(o, dict): return {k: _convert_to_json(v) for k, v in o.items()}
+        if isinstance(o, list): return [_convert_to_json(v) for v in o]
+        return o
+
+    raw_dict = asdict(final_structure)
+    final_json = json.dumps(_convert_to_json(raw_dict), indent=2)
+
+    log().info("\n--- Final Argument Structure Output ---")
+    log().info(final_json)
