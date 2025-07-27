@@ -13,16 +13,14 @@ _model_instances: dict[str, AduAndStanceClassifier] = {}
 
 def get_adu_classifier(model_name: str) -> AduAndStanceClassifier:
     if model_name not in _model_instances:
-        if model_name == "modernbert":
-            model_config = MODEL_CONFIGS.get("modernbert")
+        if model_name == "modernbert" or model_name == "deberta":
+            model_config = MODEL_CONFIGS.get(model_name)
             if not model_config:
-                raise ValueError("Model configuration for 'modernbert' is not defined.")
-            _model_instances[model_name] = PeftEncoderModelLoader(**model_config["params"])
-        if model_name == "deberta":
-            model_config = MODEL_CONFIGS.get("deberta")
-            if not model_config:
-                raise ValueError("Model configuration for 'deberta' is not defined.")
-            _model_instances[model_name] = NonTrainedEncoderModelLoader(**model_config["params"])
+                raise ValueError(f"Model configuration for {model_name} is not defined.")
+            LoaderClass = model_config["loader_class"]
+            # Factory: Instantiate the correct class with its specific parameters
+            miner: AduAndStanceClassifier = LoaderClass(**model_config["params"])
+            _model_instances[model_name] = miner
         elif model_name == "openai":
             _model_instances[model_name] = OpenAILLMClassifier()
         elif model_name == "tinyllama":
