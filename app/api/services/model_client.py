@@ -1,12 +1,10 @@
-# app/services/model_client.py
-
-from app.argmining.implementations.encoder_model_loader import MODEL_CONFIGS, NonTrainedEncoderModelLoader, PeftEncoderModelLoader
+from app.argmining.implementations.encoder_model_loader import MODEL_CONFIGS
 from app.argmining.implementations.openai_claim_premise_linker import OpenAIClaimPremiseLinker
 from app.argmining.implementations.openai_llm_classifier import OpenAILLMClassifier
 from app.argmining.implementations.tinyllama_llm_classifier import TinyLLamaLLMClassifier
 
 from app.argmining.interfaces.adu_and_stance_classifier import AduAndStanceClassifier
-from app.argmining.models.argument_units import UnlinkedArgumentUnits, LinkedArgumentUnitsWithStance
+from app.argmining.models.argument_units import LinkedArgumentUnitsWithStance
 from ...log import log 
 
 _model_instances: dict[str, AduAndStanceClassifier] = {}
