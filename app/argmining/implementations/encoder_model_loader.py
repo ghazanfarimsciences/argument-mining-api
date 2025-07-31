@@ -483,9 +483,10 @@ MODEL_CONFIGS = {
     "deberta": {
         "loader_class": NonTrainedEncoderModelLoader,
         "params": {
+         "base_model_path":"microsoft/deberta-v3-base",
             "model_paths": {
-                "type_model_path": "microsoft/deberta-v3-base",
-                "stance_model_path": "microsoft/deberta-v3-base"
+                "type_model_path": "deberta-type-checkpoints/checkpoint-3",
+                "stance_model_path": "deberta-stance-checkpoints/checkpoint-3"
             }
         }
     }
