@@ -4,8 +4,10 @@ import uuid
 import openai
 import torch
 import re 
+import os
 
 from transformers import AutoTokenizer, AutoModelForCausalLM
+from peft import PeftModel
 from uuid import UUID, uuid4
 
 from app.argmining.implementations.openai_claim_premise_linker import OpenAIClaimPremiseLinker
@@ -20,16 +22,34 @@ def split_into_sentences(text):
 
 class TinyLLamaLLMClassifier (AduAndStanceClassifier): 
     def __init__ (self): 
-        self.model_id = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
-        self.tokenizer = AutoTokenizer.from_pretrained(self.model_id, use_auth_token=HF_TOKEN)
-        self.model = AutoModelForCausalLM.from_pretrained(self.model_id, use_auth_token=HF_TOKEN)
+        self.base_model_id = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+        self.adapter_path = os.path.join(os.path.dirname(__file__), "TinyLlama-1.1B-Chat-v1.0_finetuned")
+        
+        # Load tokenizer
+        self.tokenizer = AutoTokenizer.from_pretrained(self.base_model_id, use_auth_token=HF_TOKEN)
+        
+        # Load base model
+        base_model = AutoModelForCausalLM.from_pretrained(
+            self.base_model_id, 
+            use_auth_token=HF_TOKEN,
+            torch_dtype=torch.float16,  # Use fp16 for efficiency
+            device_map="auto"
+        )
+        
+        # Load PEFT adapter
+        try:
+            self.model = PeftModel.from_pretrained(base_model, self.adapter_path)
+            log().info(f"Successfully loaded PEFT adapter from {self.adapter_path}")
+        except Exception as e:
+            log().warning(f"Failed to load PEFT adapter from {self.adapter_path}: {e}")
+            log().warning("Falling back to base model")
+            self.model = base_model
     
-    def run_prompt(self, prompt, max_new_tokens=10, max_retries=3, retry_delay=1):
+    def run_prompt(self, prompt, max_new_tokens=150, max_retries=3, retry_delay=1):
         """
         Runs the prompt on the model with a retry mechanism.
         Args:
             prompt (str): The prompt to send to the model.
-            mode (str): The mode for the prompt (not used internally).
             max_new_tokens (int): Number of new tokens to generate.
             max_retries (int): Maximum number of retry attempts.
             retry_delay (int or float): Delay (in seconds) between retries.
@@ -47,7 +67,9 @@ class TinyLLamaLLMClassifier (AduAndStanceClassifier):
                     outputs = self.model.generate(
                         **inputs,
                         max_new_tokens=max_new_tokens,
-                        pad_token_id=self.tokenizer.eos_token_id
+                        pad_token_id=self.tokenizer.eos_token_id,
+                        do_sample=True,
+                        temperature=0.3
                     )
                 result = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
                 return result[len(prompt):].strip()
@@ -58,65 +80,171 @@ class TinyLLamaLLMClassifier (AduAndStanceClassifier):
                     time.sleep(retry_delay)
         # If we reach here, all attempts failed
         raise Exception(f"Model failed to run the prompt after {max_retries} attempts") from last_exception
+    
+    def _parse_adu_output(self, output_text: str) -> List[dict]:
+        """
+        Parses the model output to extract ADUs with their types.
+        Expected format: CLAIM: text... PREMISE: text... etc.
+        """
+        adus = []
+        lines = output_text.strip().split('\n')
         
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+                
+            # Look for CLAIM: or PREMISE: patterns
+            if line.upper().startswith('CLAIM:'):
+                text = line[6:].strip()
+                if text:
+                    adus.append({'type': 'claim', 'text': text})
+            elif line.upper().startswith('PREMISE:'):
+                text = line[8:].strip()
+                if text:
+                    adus.append({'type': 'premise', 'text': text})
+            # Alternative patterns
+            elif '- CLAIM:' in line.upper():
+                text = line.split('- CLAIM:', 1)[1].strip()
+                if text:
+                    adus.append({'type': 'claim', 'text': text})
+            elif '- PREMISE:' in line.upper():
+                text = line.split('- PREMISE:', 1)[1].strip()
+                if text:
+                    adus.append({'type': 'premise', 'text': text})
+        
+        return adus
         
     def classify_adus(self, text: str) -> UnlinkedArgumentUnits:
-        """Extracts and labels argumentative units from text.
+        """
+        Extracts and labels argumentative units from text using full context.
         Args:
-            text (str):  The raw input document.
+            text (str): The raw input document.
         Returns:
             UnlinkedArgumentUnits: List of claims and premises extracted from the text.
         """
-        # Step 1: Split paragraph into sentences
-        sentences = split_into_sentences(text)
-        log().info(f"Found {len(sentences)} in the input text")
+        log().info(f"Analyzing text with context-aware approach")
+        
+        # Context-aware prompt that considers the entire text
+        prompt = f"""
+You are an expert argument-mining classifier. Analyze the following text and identify all argumentative discourse units (ADUs) within their full context.
 
+Task: 
+1. Read the ENTIRE text to understand the context and argument structure
+2. Identify argumentative units that function as either CLAIMS or PREMISES
+3. Consider how each unit relates to the overall argument structure
+4. Extract meaningful argumentative segments (can be phrases, sentences, or sentence groups)
+
+Definitions:
+- CLAIM: A statement that takes a stance, makes an assertion, or expresses what should/shouldn't happen
+- PREMISE: A statement that provides evidence, reasons, data, examples, or explanations to support or refute claims
+
+Context Guidelines:
+- Consider the rhetorical function of each unit within the broader argument
+- Look for implicit argumentative relationships between statements
+- Identify units that work together to form coherent argumentative moves
+- Pay attention to discourse markers and connectives that signal argumentative relationships
+
+Output Format:
+For each identified ADU, write on a new line:
+CLAIM: [the exact text of the claim]
+or
+PREMISE: [the exact text of the premise]
+
+Text to analyze:
+"{text}"
+
+Identified ADUs:
+"""
+
+        response = self.run_prompt(prompt, max_new_tokens=300)
+        log().debug(f"Raw model response: {response}")
+        
+        # Parse the response to extract ADUs
+        parsed_adus = self._parse_adu_output(response)
+        log().info(f"Parsed {len(parsed_adus)} ADUs from model response")
+        
         # Initialize separate lists for claims and premises
         claims: List[ArgumentUnit] = []
         premises: List[ArgumentUnit] = []
+        
+        # Convert parsed ADUs to ArgumentUnit objects
+        for adu_data in parsed_adus:
+            adu = ArgumentUnit(
+                uuid=uuid4(), 
+                text=adu_data['text'], 
+                type=adu_data['type']
+            )
+            
+            if adu_data['type'] == 'claim':
+                claims.append(adu)
+                log().debug(f"Identified CLAIM: {adu_data['text']}")
+            else:
+                premises.append(adu)
+                log().debug(f"Identified PREMISE: {adu_data['text']}")
+        
+        # Fallback: If no ADUs were extracted, try sentence-by-sentence with context
+        if not claims and not premises:
+            log().warning("No ADUs extracted with context approach, falling back to enhanced sentence analysis")
+            return self._fallback_sentence_analysis(text)
+            
+        return UnlinkedArgumentUnits(claims=claims, premises=premises)
+    
+    def _fallback_sentence_analysis(self, text: str) -> UnlinkedArgumentUnits:
+        """
+        Fallback method that analyzes sentences but with full text context.
+        """
+        sentences = split_into_sentences(text)
+        log().info(f"Fallback: Found {len(sentences)} sentences in the input text")
 
-        # Step 2: Iterate through sentences and classify them
-        for sentence in sentences:
+        claims: List[ArgumentUnit] = []
+        premises: List[ArgumentUnit] = []
+
+        for i, sentence in enumerate(sentences):
+            # Create context window (previous and next sentences)
+            context_before = ' '.join(sentences[max(0, i-2):i]) if i > 0 else ""
+            context_after = ' '.join(sentences[i+1:min(len(sentences), i+3)]) if i < len(sentences)-1 else ""
+            
             prompt = f"""
-            You are an argument-mining classifier.
+You are an argument-mining classifier analyzing a sentence within its context.
 
-Task: Decide whether the SINGLE input sentence is a **claim** or a **premise**.
+Full Text Context: "{text}"
 
-Definitions (use these only):
-- claim: a statement that takes a stance or asserts something to be true/false or should/shouldn't happen.
-- premise: a statement that gives evidence, reasons, data, or explanation intended to support/refute a claim.
+Previous Context: "{context_before}"
+Current Sentence: "{sentence}"
+Following Context: "{context_after}"
+
+Task: Classify the current sentence as either "claim" or "premise" considering its role in the broader argument.
+
+Definitions:
+- claim: a statement that takes a stance or asserts something to be true/false or should/shouldn't happen
+- premise: a statement that gives evidence, reasons, data, or explanation intended to support/refute a claim
 
 Rules:
-- Output EXACTLY ONE lowercase word: "claim" or "premise".
-- If the sentence mixes both, pick the main function (assertion → claim; support/explanation → premise).
-- Do NOT add punctuation or extra text.
-
-Sentence: "{sentence}"
+- Consider the sentence's function within the overall argumentative structure
+- Output EXACTLY ONE lowercase word: "claim" or "premise"
+- Do NOT add punctuation or extra text
 
 Answer:
-            """
+"""
 
-            response = self.run_prompt(prompt)
-            adu_type = (
-                "claim" if "claim" in response.lower() else "premise"
-            )
-            log().debug(f"sentence: {sentence} | predicted as {adu_type}")
-            adu: ArgumentUnit = ArgumentUnit(
-                uuid=uuid4(), text=sentence, type=adu_type
-            )
+            response = self.run_prompt(prompt, max_new_tokens=10)
+            adu_type = "claim" if "claim" in response.lower() else "premise"
+            
+            log().debug(f"Sentence: {sentence} | Predicted as: {adu_type}")
+            
+            adu = ArgumentUnit(uuid=uuid4(), text=sentence, type=adu_type)
             if adu_type == "claim":
                 claims.append(adu)
             else:
                 premises.append(adu)
+                
         return UnlinkedArgumentUnits(claims=claims, premises=premises)
 
-    
     def classify_stance(self, linked_argument_units: LinkedArgumentUnits, originalText: str) -> LinkedArgumentUnitsWithStance:
         """
         Classifies the stance of argument units (ADUs) and links claims to premises.
-        :param linked_argument_units: The structured links between claims and premises.
-        :param originalText: The original input text (for context only).
-        :return: LinkedArgumentUnitsWithStance object representing the final stance graph.
+        Now uses the original text context for better stance classification.
         """
         result_linked_arguments: List[StanceRelation] = []
     
@@ -140,23 +268,36 @@ Answer:
                     continue
     
                 log().debug(f"  → Premise: {premise.text}")
-                prompt = f"""You are given a claim and evidence. Determine whether the evidence supports(pro) or refutes(con) the claim.
-    Respond only with one word: "pro" or "con".
-    Claim: {claim.text}
-    Evidence: {premise.text}
-    Stance:"""
+                
+                # Enhanced prompt with context
+                prompt = f"""You are analyzing the relationship between a claim and evidence within a broader argumentative context.
+
+Original Text Context: "{originalText}"
+
+Claim: "{claim.text}"
+Evidence: "{premise.text}"
+
+Task: Determine whether the evidence supports (pro) or refutes (con) the claim, considering the broader context.
+
+Rules:
+- "pro" means the evidence supports, strengthens, or provides reasons for the claim
+- "con" means the evidence refutes, weakens, or provides reasons against the claim
+- Consider the argumentative context and how these elements function together
+- Respond with exactly one word: "pro" or "con"
+
+Stance:"""
     
-                result = self.run_prompt(prompt)
+                result = self.run_prompt(prompt, max_new_tokens=10)
     
                 # Normalize result to 'pro' or 'con'
                 result_lower = result.lower().strip()
-                if any(x in result_lower for x in ("refute", "con")):
+                if any(x in result_lower for x in ("refute", "con", "against", "oppose")):
                     relationship = "con"
-                elif any(x in result_lower for x in ("support", "pro")):
+                elif any(x in result_lower for x in ("support", "pro", "for", "favor")):
                     relationship = "pro"
                 else:
-                    log().warning(f"Unexpected stance output: {result} — skipping")
-                    relationship = "unidentified"
+                    log().warning(f"Unexpected stance output: {result} — defaulting to 'pro'")
+                    relationship = "pro"  # Default assumption
     
                 log().debug(f"Claim: {claim.text} | Premise: {premise.text} -> Relationship: {relationship}")
                 result_linked_arguments.append(
@@ -189,7 +330,7 @@ def test_model():
     # The rest of the pipeline is IDENTICAL for both models because they share the same interface.
     
     # --- Step 1: Classify ADUs to get unlinked claims and premises ---
-    (f"--- Running Step 1: Classify ADUs using TinyLLama ---")
+    log().info(f"--- Running Step 1: Context-Aware ADU Classification using TinyLLama ---")
     unlinked_adus = miner.classify_adus(example_text)
     log().info(f"Found Claims: {len(unlinked_adus.claims)}")
     log().info(f"Found Premises: {len(unlinked_adus.premises)}")
@@ -209,7 +350,7 @@ def test_model():
         return
 
     # --- Step 3: Classify the stance for the linked units ---
-    log().info(f"--- Running Step 3: Classify Stance using TinyLLama ---")
+    log().info(f"--- Running Step 3: Context-Aware Stance Classification using TinyLLama ---")
     final_structure = miner.classify_stance(
         linked_argument_units=linked_adus, originalText=example_text
     )
